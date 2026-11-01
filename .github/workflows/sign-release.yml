@@ -27,6 +27,9 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           persist-credentials: false
+          # Contents-only upload credentials can edit scripts, but cannot replace this workflow.
+          # Load signer code/public trust only from the reviewed immutable commit.
+          ref: 955780cfe39bf89a0ed8e82b4d9b0a3905dbff65
       - name: Sign only the approved build and matching draft assets
         env:
           GH_TOKEN: ${{ github.token }}
