@@ -8,7 +8,15 @@ const runGh = (args) => execFileSync("gh", args, { encoding: "utf8", maxBuffer: 
 
 function release(repository, tag, gh) {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository) || !/^v\d+\.\d+\.\d+$/.test(tag)) throw new Error("Invalid release repository or tag");
-  const value = JSON.parse(gh(["api", `repos/${repository}/releases/tags/${tag}`]));
+  let raw;
+  try { raw = gh(["api", `repos/${repository}/releases/tags/${tag}`]); }
+  catch (error) {
+    if (!String(error.stderr).includes("HTTP 404")) throw error;
+    const url = gh(["release", "view", tag, "--repo", repository, "--json", "apiUrl", "--jq", ".apiUrl"]).trim();
+    if (!url.startsWith(`https://api.github.com/repos/${repository}/releases/`) || !/^\d+$/.test(url.split("/").at(-1))) throw new Error("Invalid draft release URL");
+    raw = gh(["api", url]);
+  }
+  const value = JSON.parse(raw);
   if (value.tag_name !== tag || typeof value.draft !== "boolean" || !Array.isArray(value.assets)) throw new Error("Invalid release metadata");
   return value;
 }
