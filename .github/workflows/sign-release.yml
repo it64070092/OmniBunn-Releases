@@ -1,0 +1,37 @@
+# Install in it64070092/OmniBunn-Releases/.github/workflows/sign-release.yml.
+# No push trigger: signing requires explicit dispatch plus environment approval.
+name: Approve and sign an OmniBunn release
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        required: true
+        description: Draft release tag (vX.Y.Z)
+      source_revision:
+        required: true
+        description: Reviewed DB_Ochestration build commit
+      candidate_sha256:
+        required: true
+        description: SHA-256 of the build-generated release-candidate.json
+permissions:
+  contents: write
+concurrency:
+  group: release-signing-${{ inputs.tag }}
+  cancel-in-progress: false
+jobs:
+  sign:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    environment: release-signing
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+      - name: Sign only the approved build and matching draft assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OMNIBUNN_RELEASE_SIGNING_KEY: ${{ secrets.OMNIBUNN_RELEASE_SIGNING_KEY }}
+          RELEASE_TAG: ${{ inputs.tag }}
+          SOURCE_REVISION: ${{ inputs.source_revision }}
+          CANDIDATE_SHA256: ${{ inputs.candidate_sha256 }}
+        run: node scripts/release-manifest.mjs sign "$RELEASE_TAG" "$SOURCE_REVISION" "$CANDIDATE_SHA256"
