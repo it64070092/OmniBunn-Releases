@@ -29,7 +29,7 @@ jobs:
           persist-credentials: false
           # Contents-only upload credentials can edit scripts, but cannot replace this workflow.
           # Load signer code/public trust only from the reviewed immutable commit.
-          ref: 955780cfe39bf89a0ed8e82b4d9b0a3905dbff65
+          ref: 64d0436087305c24b3749f8ecdadc577a35dfeb3
       - name: Sign only the approved build and matching draft assets
         env:
           GH_TOKEN: ${{ github.token }}
