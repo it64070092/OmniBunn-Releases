@@ -5,10 +5,40 @@ import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import verification from "../desktop/release-verification.cjs";
-import { assertDraftRelease, uploadReleaseAssets } from "./release-assets.mjs";
+import { assertDraftRelease, assertReleaseSource, uploadReleaseAssets } from "./release-assets.mjs";
 const { REPOSITORY, MAX_MANIFEST_BYTES, releaseSigningBytes, validateReleasePayload, verifyReleaseManifest } = verification;
-const gh = (args) => execFileSync("gh", args, { encoding: "utf8", maxBuffer: MAX_MANIFEST_BYTES, timeout: 30_000 });
+const gh = (args) => execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: MAX_MANIFEST_BYTES, timeout: 30_000 });
 const trust = () => JSON.parse(readFileSync(new URL("../desktop/release-trust.json", import.meta.url), "utf8"));
+
+export function verifyBuildCandidate(tag, revision, runId, candidateSha, run) {
+  const repository = "it64070092/DB_Ochestration";
+  if (!/^[1-9]\d*$/.test(runId) || !/^[a-f0-9]{64}$/.test(candidateSha)) throw new Error("Invalid build proof");
+  assertReleaseSource(repository, tag, revision, run);
+  const api = `repos/${repository}/actions/runs/${runId}`;
+  const build = JSON.parse(run(["api", api]));
+  if (build.head_sha !== revision || build.path !== ".github/workflows/release-native.yml" ||
+      !["push", "workflow_dispatch"].includes(build.event) || build.repository?.full_name !== repository ||
+      build.head_repository?.full_name !== repository) throw new Error("Untrusted build identity");
+  const { jobs } = JSON.parse(run(["api", `${api}/jobs?per_page=100`]));
+  for (const name of ["Build Debian/Ubuntu amd64 package", "Build Windows x64 installer"]) {
+    const matches = jobs.filter((job) => job.name === name);
+    if (matches.length !== 1 || matches[0].conclusion !== "success") throw new Error("Required package checks have not passed");
+  }
+  const { artifacts } = JSON.parse(run(["api", `${api}/artifacts?per_page=100`]));
+  const name = `release-candidate-${revision}`;
+  const matches = artifacts.filter((artifact) => artifact.name === name);
+  if (matches.length !== 1 || matches[0].expired || matches[0].size_in_bytes > 131072) throw new Error("Missing or invalid private build artifact");
+  const dir = mkdtempSync(join(tmpdir(), "omnibunn-build-proof-"));
+  try {
+    run(["run", "download", runId, "--repo", repository, "--name", name, "--dir", dir]);
+    const file = join(dir, "release-candidate.json"), stat = lstatSync(file);
+    if (!stat.isFile() || stat.size > MAX_MANIFEST_BYTES) throw new Error("Invalid private candidate file");
+    const raw = readFileSync(file);
+    if (createHash("sha256").update(raw).digest("hex") !== candidateSha) throw new Error("Candidate does not match the private build");
+    const payload = validateReleasePayload(JSON.parse(raw), REPOSITORY, tag);
+    if (payload.sourceRevision !== revision) throw new Error("Private candidate source mismatch");
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}
 
 export async function describeAssets(files) {
   const assets = [];
@@ -38,7 +68,7 @@ export function signCandidate(raw, key, trustedKeys, keyId = "omnibunn-release-2
   return signed;
 }
 
-export async function signDraftRelease(tag, revision, candidateSha, key, trustedKeys, run = gh) {
+export async function signDraftRelease(tag, revision, candidateSha, key, trustedKeys, run = gh, keyId = "omnibunn-release-2026-11") {
   const release = assertDraftRelease(REPOSITORY, tag, run);
   const candidate = release.assets.find((asset) => asset.name === "release-candidate.json");
   if (!candidate || !Number.isSafeInteger(candidate.id) || candidate.size > MAX_MANIFEST_BYTES || !/^[a-f0-9]{64}$/.test(candidateSha)) throw new Error("Release candidate is missing or invalid");
@@ -53,7 +83,7 @@ export async function signDraftRelease(tag, revision, candidateSha, key, trusted
   const dir = mkdtempSync(join(tmpdir(), "omnibunn-release-signing-"));
   try {
     const file = join(dir, "release-manifest.json");
-    writeFileSync(file, signCandidate(raw, key, trustedKeys), { mode: 0o600, flag: "wx" });
+    writeFileSync(file, signCandidate(raw, key, trustedKeys, keyId), { mode: 0o600, flag: "wx" });
     await uploadReleaseAssets(REPOSITORY, tag, [file], run);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
@@ -67,12 +97,18 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
     validateReleasePayload(payload, REPOSITORY, tag);
     process.stdout.write(JSON.stringify(payload, null, 2) + "\n");
   } else if (command === "sign") {
-    await signDraftRelease(...args, process.env.OMNIBUNN_RELEASE_SIGNING_KEY, trust());
+    if (!process.env.OMNIBUNN_BUILD_READ_TOKEN) throw new Error("Private build verification token is required");
+    verifyBuildCandidate(args[0], args[1], process.env.BUILD_RUN_ID, args[2], (values) => execFileSync("gh", values, {
+      encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 1024 * 1024, timeout: 60_000,
+      env: { ...process.env, GH_TOKEN: process.env.OMNIBUNN_BUILD_READ_TOKEN, OMNIBUNN_RELEASE_SIGNING_KEY: "" },
+    }));
+    await signDraftRelease(...args, process.env.OMNIBUNN_RELEASE_SIGNING_KEY, trust(), gh, process.env.OMNIBUNN_RELEASE_SIGNING_KEY_ID);
   } else if (command === "request-signature") {
     const candidatePath = args[0], raw = readFileSync(candidatePath, "utf8"), candidate = JSON.parse(raw);
     validateReleasePayload(candidate, REPOSITORY, candidate.tag);
     const sha = createHash("sha256").update(raw).digest("hex");
-    gh(["workflow", "run", "sign-release.yml", "--repo", REPOSITORY, "--ref", "main", "-f", `tag=${candidate.tag}`, "-f", `source_revision=${candidate.sourceRevision}`, "-f", `candidate_sha256=${sha}`]);
+    if (!/^[1-9]\d*$/.test(process.env.GITHUB_RUN_ID || "")) throw new Error("Private build run ID is required");
+    gh(["workflow", "run", "sign-release.yml", "--repo", REPOSITORY, "--ref", "main", "-f", `tag=${candidate.tag}`, "-f", `source_revision=${candidate.sourceRevision}`, "-f", `candidate_sha256=${sha}`, "-f", `build_run_id=${process.env.GITHUB_RUN_ID}`]);
     console.log("Waiting for approval in the public release-signing environment; no release has been published.");
     for (let attempt = 0; attempt < 180; attempt++) {
       const staged = assertDraftRelease(REPOSITORY, candidate.tag, gh);

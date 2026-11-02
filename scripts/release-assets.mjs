@@ -4,7 +4,7 @@ import { createReadStream, lstatSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const runGh = (args) => execFileSync("gh", args, { encoding: "utf8", maxBuffer: 2 * 1024 * 1024, timeout: 300_000 });
+const runGh = (args) => execFileSync("gh", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], maxBuffer: 2 * 1024 * 1024, timeout: 300_000 });
 
 function release(repository, tag, gh) {
   if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository) || !/^v\d+\.\d+\.\d+$/.test(tag)) throw new Error("Invalid release repository or tag");
