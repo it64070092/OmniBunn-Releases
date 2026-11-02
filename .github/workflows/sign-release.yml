@@ -13,6 +13,9 @@ on:
       candidate_sha256:
         required: true
         description: SHA-256 of the build-generated release-candidate.json
+      build_run_id:
+        required: true
+        description: Private source build run to independently verify
 permissions:
   contents: write
 concurrency:
@@ -29,11 +32,14 @@ jobs:
           persist-credentials: false
           # Contents-only upload credentials can edit scripts, but cannot replace this workflow.
           # Load signer code/public trust only from the reviewed immutable commit.
-          ref: 64d0436087305c24b3749f8ecdadc577a35dfeb3
+          ref: 95c704cdb8385ab9c435005401e07083811e6800
       - name: Sign only the approved build and matching draft assets
         env:
           GH_TOKEN: ${{ github.token }}
           OMNIBUNN_RELEASE_SIGNING_KEY: ${{ secrets.OMNIBUNN_RELEASE_SIGNING_KEY }}
+          OMNIBUNN_RELEASE_SIGNING_KEY_ID: omnibunn-release-2026-11-recovery
+          OMNIBUNN_BUILD_READ_TOKEN: ${{ secrets.OMNIBUNN_BUILD_READ_TOKEN }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
           RELEASE_TAG: ${{ inputs.tag }}
           SOURCE_REVISION: ${{ inputs.source_revision }}
           CANDIDATE_SHA256: ${{ inputs.candidate_sha256 }}
